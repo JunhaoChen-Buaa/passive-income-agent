@@ -648,7 +648,7 @@ function ProductAskBubble() {
       )}
       <button className="ask-trigger" type="button" onClick={() => setOpen((value) => !value)} title="打开问一问">
         <MessageCircle size={22} />
-        <span>问一问</span>
+        <span className="ask-trigger-label">问一问</span>
       </button>
     </div>
   );

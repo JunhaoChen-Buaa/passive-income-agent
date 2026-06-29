@@ -41,7 +41,7 @@ button {
 
 .app-shell {
   display: grid;
-  grid-template-columns: 252px 1fr;
+  grid-template-columns: 252px minmax(0, 1fr);
   min-height: 100vh;
 }
 
@@ -147,13 +147,16 @@ button {
 .main {
   padding: 22px;
   max-width: 1500px;
+  min-width: 0;
   width: 100%;
   margin: 0 auto;
+  padding-bottom: 96px;
 }
 
 .page-stack {
   display: grid;
   gap: 18px;
+  min-width: 0;
 }
 
 .page-header {
@@ -1237,17 +1240,32 @@ tbody tr:hover,
 }
 
 .ask-trigger {
-  min-height: 46px;
+  width: 48px;
+  height: 48px;
   border: 0;
   border-radius: 999px;
-  padding: 0 16px;
+  padding: 0;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 8px;
   color: #fff;
   background: #245b52;
   box-shadow: 0 12px 26px rgba(36, 91, 82, 0.22);
   font-weight: 800;
+}
+
+.ask-bubble.open .ask-trigger {
+  display: none;
+}
+
+.ask-trigger-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
 }
 
 .ask-panel {
@@ -1338,7 +1356,7 @@ tbody tr:hover,
   background: #fbfcfb;
 }
 
-@media (max-width: 1180px) {
+@media (max-width: 1320px) {
   .strategy-grid,
   .market-grid,
   .workflow-grid,
