@@ -78,9 +78,8 @@ if ($frontendOwner) {
 } else {
   $frontendOut = Join-Path $LogsDir "frontend.out.log"
   $frontendErr = Join-Path $LogsDir "frontend.err.log"
-  $frontendCommand = "`"$Npm`" --cache `"$NpmCache`" run dev -- --host 127.0.0.1 --port 5174"
-  $frontend = Start-Process -FilePath "cmd.exe" `
-    -ArgumentList @("/c", $frontendCommand) `
+  $frontend = Start-Process -FilePath $Npm `
+    -ArgumentList @("--cache", $NpmCache, "run", "dev", "--", "--host", "127.0.0.1", "--port", "5174") `
     -WorkingDirectory $FrontendDir `
     -WindowStyle Hidden `
     -RedirectStandardOutput $frontendOut `
