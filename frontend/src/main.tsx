@@ -130,6 +130,12 @@ const assetLabels: Record<AssetKey, string> = {
   nasdaq100: '纳指100',
 };
 
+const riskPreferenceLabels: Record<Profile['risk_preference'], string> = {
+  conservative: '稳健',
+  balanced: '均衡',
+  growth: '成长',
+};
+
 const defaultProfile: Profile = {
   lump_sum_capital: 100000,
   monthly_contribution: 1000,
@@ -483,6 +489,7 @@ function App() {
           agentWorkbench={agentWorkbench}
           plan={plan}
           explanation={explanation}
+          records={records}
           currentPlanSaved={currentPlanSaved}
           onSelectStrategy={selectStrategy}
           onSaveRecord={saveRecord}
@@ -490,6 +497,7 @@ function App() {
           onGoAdvisor={() => setActivePage('advisor')}
           onGoMarket={() => setActivePage('market')}
           onGoAction={() => setActivePage('action')}
+          onGoBacktest={() => setActivePage('backtest')}
           onRefreshMarket={() => refreshMarket(true)}
           onRunAgent={runAgentSynthesis}
           marketRefreshing={marketRefreshing}
@@ -874,6 +882,7 @@ function HomePage({
   agentWorkbench,
   plan,
   explanation,
+  records,
   currentPlanSaved,
   onSelectStrategy,
   onSaveRecord,
@@ -881,6 +890,7 @@ function HomePage({
   onGoAdvisor,
   onGoMarket,
   onGoAction,
+  onGoBacktest,
   onRefreshMarket,
   onRunAgent,
   marketRefreshing,
@@ -897,15 +907,17 @@ function HomePage({
   agentWorkbench: AgentWorkbench | null;
   plan: MonthlyPlan | null;
   explanation: string;
+  records: InvestmentRecord[];
   currentPlanSaved: boolean;
   onSelectStrategy: (id: string) => void;
-  onSaveRecord: () => void;
+  onSaveRecord: () => void | Promise<void>;
   onGoTutorial: () => void;
   onGoAdvisor: () => void;
   onGoMarket: () => void;
   onGoAction: () => void;
-  onRefreshMarket: () => void;
-  onRunAgent: () => void;
+  onGoBacktest: () => void;
+  onRefreshMarket: () => void | Promise<void>;
+  onRunAgent: () => void | Promise<void>;
   marketRefreshing: boolean;
 }) {
   const liveAssets = market?.assets.filter((asset) => asset.is_live).length || 0;
@@ -945,10 +957,22 @@ function HomePage({
 
       <AgentWorkbenchPanel
         workbench={agentWorkbench}
+        profile={profile}
+        cashPool={cashPool}
+        strategy={selectedStrategy}
+        plan={plan}
+        market={market}
         provider={provider}
         onRunAgent={onRunAgent}
         onGoAdvisor={onGoAdvisor}
+        onGoMarket={onGoMarket}
         onGoAction={onGoAction}
+        onGoBacktest={onGoBacktest}
+        onRefreshMarket={onRefreshMarket}
+        onSaveRecord={onSaveRecord}
+        currentPlanSaved={currentPlanSaved}
+        records={records}
+        marketRefreshing={marketRefreshing}
       />
 
       <section className="workflow-grid">
@@ -1070,18 +1094,151 @@ function HomePage({
 
 function AgentWorkbenchPanel({
   workbench,
+  profile,
+  cashPool,
+  strategy,
+  plan,
+  market,
   provider,
   onRunAgent,
   onGoAdvisor,
+  onGoMarket,
   onGoAction,
+  onGoBacktest,
+  onRefreshMarket,
+  onSaveRecord,
+  currentPlanSaved,
+  records,
+  marketRefreshing,
 }: {
   workbench: AgentWorkbench | null;
+  profile: Profile;
+  cashPool: CashPool;
+  strategy?: StrategyTemplate;
+  plan: MonthlyPlan | null;
+  market: MarketSnapshot | null;
   provider: ProviderConfigOut | null;
-  onRunAgent: () => void;
+  onRunAgent: () => void | Promise<void>;
   onGoAdvisor: () => void;
+  onGoMarket: () => void;
   onGoAction: () => void;
+  onGoBacktest: () => void;
+  onRefreshMarket: () => void | Promise<void>;
+  onSaveRecord: () => void | Promise<void>;
+  currentPlanSaved: boolean;
+  records: InvestmentRecord[];
+  marketRefreshing: boolean;
 }) {
   const tools = workbench?.tools || [];
+  const [chatInput, setChatInput] = useState('');
+  const [chatLoading, setChatLoading] = useState(false);
+  const [activeCommand, setActiveCommand] = useState('');
+  const [consoleMessages, setConsoleMessages] = useState<AskMessage[]>([
+    {
+      role: 'assistant',
+      text: '我会先读取你的画像、现金池、策略、每日市场和投资记录，再决定该调用哪个工具。你可以直接问，也可以点下面的快捷任务。',
+    },
+  ]);
+  const investableCash = Math.max(0, profile.current_cash - profile.emergency_cash_floor);
+  const cashTotal = cashPool.emergency_cash + cashPool.queue_cash + cashPool.opportunity_cash;
+  const profileScoreParts = [
+    profile.lump_sum_capital > 0,
+    profile.monthly_contribution > 0,
+    profile.emergency_cash_floor > 0,
+    profile.investment_months > 0,
+    Boolean(strategy?.is_personalized),
+  ];
+  const profileScore = Math.round((profileScoreParts.filter(Boolean).length / profileScoreParts.length) * 100);
+  const liveAssets = market?.assets.filter((asset) => asset.is_live).length || 0;
+  const profileItems = [
+    { label: '可投资缓冲', value: `¥${fmtMoney(investableCash)}`, sub: '当前现金减应急底线' },
+    { label: '月现金流', value: `¥${fmtMoney(profile.monthly_contribution)}`, sub: `${profile.investment_months} 个月排队节奏` },
+    { label: '现金池结构', value: `¥${fmtMoney(cashTotal)}`, sub: `应急 ${fmtMoney(cashPool.emergency_cash)} / 机会 ${fmtMoney(cashPool.opportunity_cash)}` },
+    { label: '风险偏好', value: riskPreferenceLabels[profile.risk_preference], sub: strategy?.is_personalized ? '已生成个人策略' : '仍需个人化校准' },
+    { label: '市场输入', value: liveAssets ? `${liveAssets}/5 真实K线` : '代理数据', sub: plan ? `${plan.temperature_band} · 温度 ${plan.average_temperature}` : '等待计划' },
+  ];
+  const commandCards = [
+    { id: 'synthesis', label: '综合一次', desc: provider?.api_key_set ? '调用模型总结当前上下文' : '刷新本地 Agent 工作台', icon: Brain },
+    { id: 'strategy', label: '生成策略', desc: '进入画像访谈和个人策略', icon: Brain },
+    { id: 'market', label: '刷新评估', desc: '调用每日指数评估', icon: Activity },
+    { id: 'action', label: '行动指南', desc: '查看本月买入脚本', icon: CalendarCheck },
+    { id: 'backtest', label: '策略回测', desc: '打开历史压力测试', icon: LineChart },
+    { id: 'save', label: currentPlanSaved ? '已保存记录' : '保存记录', desc: currentPlanSaved ? '本次建议已在记录里' : '把本月计划存档', icon: Save },
+  ];
+
+  function pushConsoleMessage(message: AskMessage) {
+    setConsoleMessages((current) => [...current, message]);
+  }
+
+  async function runCommand(commandId: string) {
+    const command = commandCards.find((item) => item.id === commandId);
+    if (!command) return;
+    pushConsoleMessage({ role: 'user', text: command.label });
+    setActiveCommand(commandId);
+    try {
+      if (commandId === 'strategy') {
+        pushConsoleMessage({ role: 'assistant', text: '我已打开“我的策略”。先补齐画像，再生成个人纪律书；生成后会自动进入首页、行动指南和回测。' });
+        onGoAdvisor();
+        return;
+      }
+      if (commandId === 'action') {
+        pushConsoleMessage({ role: 'assistant', text: '我已打开“行动指南”。这里会按当前策略、市场温度和现金池给出近期执行脚本。' });
+        onGoAction();
+        return;
+      }
+      if (commandId === 'backtest') {
+        pushConsoleMessage({ role: 'assistant', text: '我已打开“策略回测”。你可以比较模板策略和个人策略的历史收益、回撤和回本时间。' });
+        onGoBacktest();
+        return;
+      }
+      if (commandId === 'market') {
+        await Promise.resolve(onRefreshMarket());
+        pushConsoleMessage({ role: 'assistant', text: '已调用每日指数评估，并重新计算月度计划。重点看真实K线数量、组合温度和数据质量标签。' });
+        onGoMarket();
+        return;
+      }
+      if (commandId === 'save') {
+        if (!plan) {
+          pushConsoleMessage({ role: 'assistant', text: '当前还没有可保存的月度计划。先生成个人策略或刷新每日评估，再保存投资记录。' });
+          return;
+        }
+        await Promise.resolve(onSaveRecord());
+        pushConsoleMessage({ role: 'assistant', text: currentPlanSaved ? '这条建议已经保存过，我已带你去投资记录确认。' : '已把本月建议保存到投资记录，后续可以标记是否执行。' });
+        return;
+      }
+      await Promise.resolve(onRunAgent());
+      pushConsoleMessage({ role: 'assistant', text: provider?.api_key_set ? '已让模型综合当前上下文。你可以展开右侧工具明细，查看它读取了哪些模块。' : '已刷新本地 Agent 工作台。没有 API Key 时，金额建议仍由本地规则完整生成。' });
+    } catch (err) {
+      pushConsoleMessage({ role: 'assistant', text: err instanceof Error ? err.message : '任务调用失败，请稍后再试。' });
+    } finally {
+      setActiveCommand('');
+    }
+  }
+
+  async function submitConsoleQuestion(questionOverride?: string) {
+    const question = (questionOverride || chatInput).trim();
+    if (!question) return;
+    pushConsoleMessage({ role: 'user', text: question });
+    setChatInput('');
+    setChatLoading(true);
+    try {
+      const response = await api.askAgent({
+        question,
+        profile,
+        strategy,
+        market,
+        plan,
+        records,
+      });
+      const trace = response.tools?.length ? `\n\n已读取：${response.tools.map((tool) => tool.name).join('、')}` : '';
+      pushConsoleMessage({ role: 'assistant', text: `${response.answer}${trace}` });
+    } catch (err) {
+      pushConsoleMessage({ role: 'assistant', text: answerProductQuestion(question) });
+    } finally {
+      setChatLoading(false);
+    }
+  }
+
   return (
     <section className="panel agent-workbench">
       <div className="agent-hero-row">
@@ -1101,54 +1258,160 @@ function AgentWorkbenchPanel({
           </button>
         </div>
       </div>
-      <div className="agent-tool-grid">
-        {tools.map((tool) => (
-          <div className={`agent-tool-card ${tool.status}`} key={tool.name}>
-            <div className="card-row">
-              <strong>{tool.name}</strong>
-              <span className="pill">{tool.status === 'done' ? '已完成' : tool.status === 'warning' ? '需注意' : '受阻'}</span>
+
+      <div className="agent-console-layout">
+        <div className="agent-chat-panel">
+          <div className="agent-chat-head">
+            <div className="agent-avatar">
+              <Brain size={20} />
             </div>
-            <p>{tool.summary}</p>
-            {tool.evidence.length > 0 && (
-              <ul>
-                {tool.evidence.slice(0, 2).map((item) => <li key={item}>{item}</li>)}
+            <div>
+              <strong>被动收益 Agent</strong>
+              <span>{provider?.api_key_set ? `${provider.provider} 在线` : '本地规则在线'}</span>
+            </div>
+            <em>{marketRefreshing || chatLoading || activeCommand ? '工作中' : '待命'}</em>
+          </div>
+
+          <div className="agent-command-grid">
+            {commandCards.map((command) => {
+              const Icon = command.icon;
+              return (
+                <button
+                  type="button"
+                  key={command.id}
+                  onClick={() => runCommand(command.id)}
+                  disabled={Boolean(activeCommand) || chatLoading || (command.id === 'market' && marketRefreshing)}
+                  className={command.id === 'synthesis' ? 'agent-command-card primary' : 'agent-command-card'}
+                  title={command.desc}
+                >
+                  <Icon size={17} />
+                  <span>{activeCommand === command.id ? '调用中' : command.label}</span>
+                  <em>{command.desc}</em>
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="agent-chat-messages">
+            <div className="agent-chat-date">当前会话</div>
+            {consoleMessages.map((message, index) => (
+              <div className={message.role === 'user' ? 'agent-chat-message user' : 'agent-chat-message'} key={`${message.role}-${index}`}>
+                {message.text}
+              </div>
+            ))}
+            {(chatLoading || activeCommand) && <div className="agent-chat-message">正在读取上下文并调用工具...</div>}
+          </div>
+
+          {workbench?.suggested_questions?.length ? (
+            <div className="agent-prompt-row">
+              {workbench.suggested_questions.slice(0, 3).map((question) => (
+                <button type="button" key={question} onClick={() => submitConsoleQuestion(question)} disabled={chatLoading || Boolean(activeCommand)}>
+                  {question}
+                </button>
+              ))}
+            </div>
+          ) : null}
+
+          <div className="agent-console-input">
+            <input
+              value={chatInput}
+              onChange={(event) => setChatInput(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') submitConsoleQuestion();
+              }}
+              placeholder="直接问：现在该买什么？为什么要少买？帮我看个人策略..."
+            />
+            <span>Auto</span>
+            <button type="button" onClick={() => submitConsoleQuestion()} disabled={chatLoading || Boolean(activeCommand)} title="发送给 Agent">
+              <Send size={17} />
+            </button>
+          </div>
+        </div>
+
+        <div className="agent-context-panel">
+          <div className="profile-overview">
+            <div className="profile-score">
+              <span>画像完整度</span>
+              <strong>{profileScore}%</strong>
+              <em>{strategy?.is_personalized ? '已进入个人策略' : '建议先完成个人策略'}</em>
+            </div>
+            <div className="profile-grid">
+              {profileItems.map((item) => (
+                <div className="profile-chip" key={item.label}>
+                  <span>{item.label}</span>
+                  <strong>{item.value}</strong>
+                  <em>{item.sub}</em>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="agent-brief-grid">
+            <div className="agent-brief-card primary">
+              <span>本月动作</span>
+              <strong>{plan ? `买入 ¥${fmtMoney(plan.suggested_total_buy)}` : '等待计划'}</strong>
+              <p>{plan ? `${plan.temperature_band} · 倍率 ${plan.multiplier}` : '先完成资金和策略设置'}</p>
+            </div>
+            <div className="agent-brief-card">
+              <span>策略状态</span>
+              <strong>{strategy?.is_personalized ? '个人策略' : '模板策略'}</strong>
+              <p>{strategy?.name || '尚未选择策略'}</p>
+            </div>
+            <div className="agent-brief-card">
+              <span>下一步</span>
+              <strong>{strategy?.is_personalized ? '查看行动指南' : '生成个人策略'}</strong>
+              <p>{(workbench?.next_actions || ['生成个人策略'])[0]}</p>
+            </div>
+          </div>
+
+          <div className="agent-collapsible">
+            <details>
+              <summary>查看 Agent 调用明细 <span>{tools.length || 0} 项</span></summary>
+              <div className="agent-tool-list">
+                {tools.map((tool) => (
+                  <div className={`agent-tool-row ${tool.status}`} key={tool.name}>
+                    <div>
+                      <strong>{tool.name}</strong>
+                      <p>{tool.summary}</p>
+                    </div>
+                    <span className="pill">{tool.status === 'done' ? '已完成' : tool.status === 'warning' ? '需注意' : '受阻'}</span>
+                    {tool.evidence.length > 0 && (
+                      <ul>
+                        {tool.evidence.map((item) => <li key={item}>{item}</li>)}
+                      </ul>
+                    )}
+                  </div>
+                ))}
+                {!tools.length && <p className="fine-print">刷新后会展示 Agent 实际读取和调用的工具。</p>}
+              </div>
+            </details>
+            <details>
+              <summary>查看数据缺口和边界 <span>{workbench?.missing_data?.length || 0} 项</span></summary>
+              <ul className="note-list compact-list">
+                {(workbench?.missing_data?.length ? workbench.missing_data : ['暂无关键阻塞；仍需记住历史数据不代表未来收益。']).map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
               </ul>
-            )}
+            </details>
           </div>
-        ))}
-        {!tools.length && (
-          <div className="agent-tool-card warning">
-            <strong>等待运行</strong>
-            <p>刷新后会展示 Agent 实际读取和调用的工具。</p>
+
+          <div className="agent-footer-row">
+            <div className="agent-next-line">
+              {(workbench?.next_actions || ['生成个人策略', '查看行动指南', '执行后保存记录']).slice(0, 3).map((item) => (
+                <span key={item}>{item}</span>
+              ))}
+            </div>
+            <div className="agent-shortcuts">
+              <button className="secondary-action" onClick={onGoAdvisor} title="生成或查看个人策略">
+                <Brain size={18} />
+                <span>个人策略</span>
+              </button>
+              <button className="secondary-action" onClick={onGoAction} title="查看近期行动指南">
+                <CalendarCheck size={18} />
+                <span>行动指南</span>
+              </button>
+            </div>
           </div>
-        )}
-      </div>
-      <div className="agent-bottom-grid">
-        <div>
-          <h3>下一步</h3>
-          <ul className="note-list">
-            {(workbench?.next_actions || ['生成个人策略', '查看行动指南', '执行后保存记录']).map((item) => (
-              <li key={item}>{item}</li>
-            ))}
-          </ul>
-        </div>
-        <div>
-          <h3>数据缺口</h3>
-          <ul className="note-list">
-            {(workbench?.missing_data?.length ? workbench.missing_data : ['暂无关键阻塞；仍需记住历史数据不代表未来收益。']).map((item) => (
-              <li key={item}>{item}</li>
-            ))}
-          </ul>
-        </div>
-        <div className="agent-shortcuts">
-          <button className="secondary-action" onClick={onGoAdvisor} title="生成或查看个人策略">
-            <Brain size={18} />
-            <span>个人策略</span>
-          </button>
-          <button className="secondary-action" onClick={onGoAction} title="查看近期行动指南">
-            <CalendarCheck size={18} />
-            <span>行动指南</span>
-          </button>
         </div>
       </div>
     </section>
@@ -1242,7 +1505,11 @@ function AdvisorPage({
     goals: '长期积累被动收入，优先用指数基金和复利跑赢通胀。',
     investment_horizon: '10年以上',
     drawdown_tolerance: '可以接受中等回撤，但不希望因为过度波动中断计划。',
+    income_stability: '每月收入相对稳定，能持续拿出一笔钱做定投。',
+    liquidity_needs: '保留应急现金后，剩余资金可以按12个月逐步投入。',
+    drawdown_response: '下跌时希望先看规则和回测，不因为恐慌一次性清仓。',
     preferences: '只买指数基金，希望包含A股宽基、红利、标普500和纳斯达克100。',
+    execution_style: '希望每月看一次行动指南，自己手动执行，执行后做记录。',
     template_hint: selectedStrategy?.id || 'balanced_compound',
   });
   const [result, setResult] = useState<PersonalStrategyResponse | null>(null);
@@ -1268,6 +1535,59 @@ function AdvisorPage({
     }
   }
 
+  const investableCash = Math.max(0, draftProfile.current_cash - draftProfile.emergency_cash_floor);
+  const profileCompletenessChecks = [
+    draftProfile.lump_sum_capital > 0,
+    draftProfile.monthly_contribution > 0,
+    draftProfile.emergency_cash_floor > 0,
+    draftProfile.current_cash >= draftProfile.emergency_cash_floor,
+    draftProfile.investment_months > 0,
+    form.goals.trim().length > 8,
+    form.investment_horizon.trim().length > 2,
+    form.drawdown_tolerance.trim().length > 8,
+    form.liquidity_needs.trim().length > 8,
+    form.execution_style.trim().length > 8,
+  ];
+  const profileCompleteness = Math.round((profileCompletenessChecks.filter(Boolean).length / profileCompletenessChecks.length) * 100);
+  const profileHighlights = [
+    { label: '可投资缓冲', value: `¥${fmtMoney(investableCash)}`, note: '当前现金扣除应急底线' },
+    { label: '月度现金流', value: `¥${fmtMoney(draftProfile.monthly_contribution)}`, note: '决定长期复利燃料' },
+    { label: '投入节奏', value: `${draftProfile.investment_months}个月`, note: '一次性资金的排队时间' },
+    { label: '风险档位', value: riskPreferenceLabels[draftProfile.risk_preference], note: '仍会被回撤反应修正' },
+  ];
+  const profileLayers = [
+    {
+      label: '资金能力',
+      value: `一次性 ¥${fmtMoney(draftProfile.lump_sum_capital)} / 每月 ¥${fmtMoney(draftProfile.monthly_contribution)}`,
+      detail: `可投资缓冲约 ¥${fmtMoney(investableCash)}。Agent 会区分一次性待投资金和每月新增现金流，避免把安全垫误当成可买资金。`,
+    },
+    {
+      label: '现金纪律',
+      value: `现金 ¥${fmtMoney(draftProfile.current_cash)} / 底线 ¥${fmtMoney(draftProfile.emergency_cash_floor)}`,
+      detail: form.liquidity_needs,
+    },
+    {
+      label: '收入稳定',
+      value: form.income_stability,
+      detail: '收入越不稳定，越需要提高现金池权重，降低一次性建仓速度。',
+    },
+    {
+      label: '时间目标',
+      value: `${draftProfile.investment_months} 个月排队 / ${form.investment_horizon}`,
+      detail: form.goals,
+    },
+    {
+      label: '回撤反应',
+      value: riskPreferenceLabels[draftProfile.risk_preference],
+      detail: `${form.drawdown_tolerance} ${form.drawdown_response}`,
+    },
+    {
+      label: '偏好执行',
+      value: selectedStrategy?.is_personalized ? '已保存个人策略' : '仍在模板阶段',
+      detail: `${form.preferences} ${form.execution_style}`,
+    },
+  ];
+
   return (
     <div className="page-stack">
       <PageHeader
@@ -1285,11 +1605,35 @@ function AdvisorPage({
           </div>
           <span className="pill">{provider?.api_key_set ? `${provider.provider} 已配置` : '本地顾问兜底'}</span>
         </div>
-        <div className="pipeline-steps">
-          <div><strong>1 画像访谈</strong><span>资金、周期、回撤承受、偏好限制</span></div>
-          <div><strong>2 生成权重</strong><span>只在五类指数资产中分配，不碰个股</span></div>
-          <div><strong>3 工具回测</strong><span>调用后端回测引擎，不伪造缺失数据</span></div>
-          <div><strong>4 保存纪律</strong><span>进入首页、行动指南和问一问上下文</span></div>
+        <details className="pipeline-details">
+          <summary>查看 Agent 生成链路 <span>4步</span></summary>
+          <div className="pipeline-steps">
+            <div><strong>1 画像访谈</strong><span>资金、周期、回撤承受、偏好限制</span></div>
+            <div><strong>2 生成权重</strong><span>只在五类指数资产中分配，不碰个股</span></div>
+            <div><strong>3 工具回测</strong><span>调用后端回测引擎，不伪造缺失数据</span></div>
+            <div><strong>4 保存纪律</strong><span>进入首页、行动指南和问一问上下文</span></div>
+          </div>
+        </details>
+      </section>
+      <section className="panel profile-deep-panel">
+        <div className="card-row">
+          <div>
+            <span className="eyebrow">用户画像拆解</span>
+            <h2>AI 不是只看“稳健/均衡/成长”，而是把你拆成六层约束。</h2>
+            <p>默认只显示关键摘要；点开每一层再看它会怎样影响策略生成。</p>
+          </div>
+          <span className="pill">画像完整度 {profileCompleteness}%</span>
+        </div>
+        <div className="profile-layer-grid">
+          {profileLayers.map((item) => (
+            <details className="profile-layer-card" key={item.label}>
+              <summary>
+                <span>{item.label}</span>
+                <strong>{item.value}</strong>
+              </summary>
+              <p>{item.detail}</p>
+            </details>
+          ))}
         </div>
       </section>
       <section className="panel saved-strategy-panel">
@@ -1356,8 +1700,23 @@ function AdvisorPage({
         )}
       </section>
       <div className="advisor-layout">
-        <div className="panel form-panel">
-          <h2>投资画像</h2>
+        <div className="panel form-panel profile-form-panel">
+          <div className="card-row">
+            <div>
+              <h2>投资画像</h2>
+              <p>先填核心数字；长问题放在高级画像访谈里，展开后再补充。</p>
+            </div>
+            <span className="pill">{visiblePersonalStrategy ? '可覆盖生成' : '待生成'}</span>
+          </div>
+          <div className="profile-snapshot-grid">
+            {profileHighlights.map((item) => (
+              <div key={item.label}>
+                <span>{item.label}</span>
+                <strong>{item.value}</strong>
+                <em>{item.note}</em>
+              </div>
+            ))}
+          </div>
           <div className="metric-grid">
             <LabeledInput label="一次性待投资金" value={draftProfile.lump_sum_capital} onChange={(value) => setDraftProfile({ ...draftProfile, lump_sum_capital: value })} />
             <LabeledInput label="每月新增现金流" value={draftProfile.monthly_contribution} onChange={(value) => setDraftProfile({ ...draftProfile, monthly_contribution: value })} />
@@ -1384,26 +1743,43 @@ function AdvisorPage({
               ))}
             </select>
           </label>
-        </div>
-
-        <div className="panel form-panel">
-          <h2>策略偏好</h2>
-          <label className="field">
-            <span>目标</span>
-            <textarea value={form.goals} onChange={(event) => setForm({ ...form, goals: event.target.value })} />
-          </label>
-          <label className="field">
-            <span>投资周期</span>
-            <textarea value={form.investment_horizon} onChange={(event) => setForm({ ...form, investment_horizon: event.target.value })} />
-          </label>
-          <label className="field">
-            <span>回撤承受度</span>
-            <textarea value={form.drawdown_tolerance} onChange={(event) => setForm({ ...form, drawdown_tolerance: event.target.value })} />
-          </label>
-          <label className="field">
-            <span>偏好与限制</span>
-            <textarea value={form.preferences} onChange={(event) => setForm({ ...form, preferences: event.target.value })} />
-          </label>
+          <details className="profile-questionnaire">
+            <summary>展开高级画像访谈 <span>8个问题</span></summary>
+            <div className="question-grid">
+              <label className="field">
+                <span>长期目标</span>
+                <textarea value={form.goals} onChange={(event) => setForm({ ...form, goals: event.target.value })} />
+              </label>
+              <label className="field">
+                <span>投资周期</span>
+                <textarea value={form.investment_horizon} onChange={(event) => setForm({ ...form, investment_horizon: event.target.value })} />
+              </label>
+              <label className="field">
+                <span>现金流稳定性</span>
+                <textarea value={form.income_stability} onChange={(event) => setForm({ ...form, income_stability: event.target.value })} />
+              </label>
+              <label className="field">
+                <span>流动性需求</span>
+                <textarea value={form.liquidity_needs} onChange={(event) => setForm({ ...form, liquidity_needs: event.target.value })} />
+              </label>
+              <label className="field">
+                <span>回撤承受度</span>
+                <textarea value={form.drawdown_tolerance} onChange={(event) => setForm({ ...form, drawdown_tolerance: event.target.value })} />
+              </label>
+              <label className="field">
+                <span>下跌时的真实反应</span>
+                <textarea value={form.drawdown_response} onChange={(event) => setForm({ ...form, drawdown_response: event.target.value })} />
+              </label>
+              <label className="field">
+                <span>偏好与限制</span>
+                <textarea value={form.preferences} onChange={(event) => setForm({ ...form, preferences: event.target.value })} />
+              </label>
+              <label className="field">
+                <span>执行方式</span>
+                <textarea value={form.execution_style} onChange={(event) => setForm({ ...form, execution_style: event.target.value })} />
+              </label>
+            </div>
+          </details>
           <button className="primary-action" onClick={submit} disabled={generating} title="生成个人策略草案">
             <Brain size={18} />
             <span>{generating ? '生成中' : provider?.api_key_set ? '让 DeepSeek 生成个人策略' : '生成本地个人策略'}</span>

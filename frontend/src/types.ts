@@ -33,7 +33,11 @@ export type PersonalStrategyRequest = {
   goals: string;
   investment_horizon: string;
   drawdown_tolerance: string;
+  income_stability: string;
+  liquidity_needs: string;
+  drawdown_response: string;
   preferences: string;
+  execution_style: string;
   template_hint: string;
 };
 

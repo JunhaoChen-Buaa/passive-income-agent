@@ -43,7 +43,11 @@ class PersonalStrategyRequest(BaseModel):
     goals: str = "长期积累被动收入，优先坚持定投纪律。"
     investment_horizon: str = "10年以上"
     drawdown_tolerance: str = "中等，可以接受阶段性回撤但不希望过度激进。"
+    income_stability: str = "每月现金流相对稳定。"
+    liquidity_needs: str = "保留应急现金后，剩余资金可按6-18个月逐步投入。"
+    drawdown_response: str = "市场下跌时优先按计划执行，不因短期波动中断。"
     preferences: str = "只买指数基金，偏好宽基、红利和全球分散。"
+    execution_style: str = "希望系统给出月度提醒和复盘，实际下单由自己手动执行。"
     template_hint: str = "balanced_compound"
 
 
