@@ -10,16 +10,27 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from .ai_provider import explain_with_provider, generate_personal_strategy, provider_out
+from .ai_provider import (
+    chat_with_agent,
+    explain_with_provider,
+    generate_personal_strategy,
+    provider_out,
+    review_discipline,
+    summarize_agent_workbench,
+)
 from .backtest import run_backtest
 from .data_sources import fetch_live_market_snapshot
 from .history_data import history_status, maybe_refresh_history_data, refresh_history_data
 from .models import (
     AIExplainRequest,
     AIExplainResponse,
+    AgentChatRequest,
+    AgentChatResponse,
+    AgentWorkbenchResponse,
     BacktestRequest,
     BacktestResult,
     CashPool,
+    DisciplineReviewResponse,
     FundPoolItem,
     HistoricalDataStatus,
     InvestmentRecord,
@@ -91,6 +102,18 @@ def _get_provider_config() -> ProviderConfigIn:
 def _get_personal_strategy() -> StrategyTemplate | None:
     value = get_value("personal_strategy") or get_value("custom_strategy")
     return StrategyTemplate(**value) if value else None
+
+
+def _get_strategy_for_profile(profile: Profile) -> StrategyTemplate:
+    if profile.selected_strategy_id == "personal_custom":
+        personal_strategy = _get_personal_strategy()
+        if personal_strategy:
+            return personal_strategy
+    return get_strategy(profile.selected_strategy_id)
+
+
+def _get_record_models() -> List[InvestmentRecord]:
+    return [InvestmentRecord(**record) for record in list_records()]
 
 
 def _run_personal_backtest(profile: Profile, strategy: StrategyTemplate, refresh_history: bool = False) -> BacktestResult:
@@ -253,6 +276,59 @@ def post_monthly_plan(request: MonthlyPlanRequest) -> MonthlyPlan:
     )
 
 
+@app.get("/api/agent/workbench", response_model=AgentWorkbenchResponse)
+def get_agent_workbench(with_ai: bool = False) -> AgentWorkbenchResponse:
+    profile = _get_profile()
+    cash_pool = _get_cash_pool()
+    strategy = _get_strategy_for_profile(profile)
+    market = fetch_live_market_snapshot()
+    history = history_status()
+    records = _get_record_models()
+    plan = generate_monthly_plan(
+        profile=profile,
+        cash_pool=cash_pool,
+        strategy_id=strategy.id,
+        custom_weights=strategy.weights if strategy.is_personalized else None,
+        market=market,
+        strategy_template=strategy if strategy.is_personalized else None,
+    )
+    return summarize_agent_workbench(
+        profile=profile,
+        strategy=strategy,
+        market=market,
+        plan=plan,
+        history=history,
+        records=records,
+        config=_get_provider_config() if with_ai else None,
+    )
+
+
+@app.post("/api/agent/chat", response_model=AgentChatResponse)
+def post_agent_chat(request: AgentChatRequest) -> AgentChatResponse:
+    profile = request.profile or _get_profile()
+    strategy = request.strategy or _get_strategy_for_profile(profile)
+    market = request.market or fetch_live_market_snapshot()
+    records = request.records or _get_record_models()
+    plan = request.plan or generate_monthly_plan(
+        profile=profile,
+        cash_pool=_get_cash_pool(),
+        strategy_id=strategy.id,
+        custom_weights=strategy.weights if strategy.is_personalized else None,
+        market=market,
+        strategy_template=strategy if strategy.is_personalized else None,
+    )
+    hydrated = request.model_copy(
+        update={
+            "profile": profile,
+            "strategy": strategy,
+            "market": market,
+            "plan": plan,
+            "records": records,
+        }
+    )
+    return chat_with_agent(hydrated, _get_provider_config())
+
+
 @app.post("/api/ai-explain", response_model=AIExplainResponse)
 def post_ai_explain(request: AIExplainRequest) -> AIExplainResponse:
     return explain_with_provider(request.plan, _get_provider_config())
@@ -261,6 +337,11 @@ def post_ai_explain(request: AIExplainRequest) -> AIExplainResponse:
 @app.get("/api/records")
 def records():
     return list_records()
+
+
+@app.get("/api/records/discipline-review", response_model=DisciplineReviewResponse)
+def get_discipline_review(with_ai: bool = False) -> DisciplineReviewResponse:
+    return review_discipline(_get_record_models(), _get_provider_config() if with_ai else None)
 
 
 @app.post("/api/records")

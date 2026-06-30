@@ -225,3 +225,49 @@ class AIExplainResponse(BaseModel):
     explanation: str
     provider_used: str
     fallback: bool
+
+
+class AgentToolTrace(BaseModel):
+    name: str
+    status: Literal["done", "warning", "blocked"]
+    summary: str
+    evidence: List[str] = Field(default_factory=list)
+
+
+class AgentWorkbenchResponse(BaseModel):
+    generated_at: datetime
+    provider_used: str
+    fallback: bool
+    headline: str
+    brief: str
+    tools: List[AgentToolTrace]
+    next_actions: List[str]
+    missing_data: List[str]
+    suggested_questions: List[str]
+
+
+class AgentChatRequest(BaseModel):
+    question: str
+    profile: Optional[Profile] = None
+    strategy: Optional[StrategyTemplate] = None
+    market: Optional[MarketSnapshot] = None
+    plan: Optional[MonthlyPlan] = None
+    records: List[InvestmentRecord] = Field(default_factory=list)
+
+
+class AgentChatResponse(BaseModel):
+    answer: str
+    provider_used: str
+    fallback: bool
+    tools: List[AgentToolTrace]
+    suggested_questions: List[str]
+
+
+class DisciplineReviewResponse(BaseModel):
+    generated_at: datetime
+    provider_used: str
+    fallback: bool
+    score: int = Field(ge=0, le=100)
+    summary: str
+    observations: List[str]
+    next_actions: List[str]

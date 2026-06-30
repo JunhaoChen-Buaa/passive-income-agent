@@ -168,3 +168,40 @@ export type InvestmentRecord = {
   executed: boolean;
   execution_note: string;
 };
+
+export type AgentToolTrace = {
+  name: string;
+  status: 'done' | 'warning' | 'blocked';
+  summary: string;
+  evidence: string[];
+};
+
+export type AgentWorkbench = {
+  generated_at: string;
+  provider_used: string;
+  fallback: boolean;
+  headline: string;
+  brief: string;
+  tools: AgentToolTrace[];
+  next_actions: string[];
+  missing_data: string[];
+  suggested_questions: string[];
+};
+
+export type AgentChatResponse = {
+  answer: string;
+  provider_used: string;
+  fallback: boolean;
+  tools: AgentToolTrace[];
+  suggested_questions: string[];
+};
+
+export type DisciplineReview = {
+  generated_at: string;
+  provider_used: string;
+  fallback: boolean;
+  score: number;
+  summary: string;
+  observations: string[];
+  next_actions: string[];
+};

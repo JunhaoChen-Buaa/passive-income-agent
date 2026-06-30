@@ -25,9 +25,12 @@ import {
 } from 'lucide-react';
 import { api } from './api';
 import type {
+  AgentChatResponse,
+  AgentWorkbench,
   AssetKey,
   BacktestResult,
   CashPool,
+  DisciplineReview,
   HistoricalDataStatus,
   InvestmentRecord,
   MarketSnapshot,
@@ -42,9 +45,9 @@ import './styles.css';
 
 const navGroups = [
   {
-    title: '核心流程',
+    title: 'AI流程',
     items: [
-      { id: 'home', label: '首页', icon: Landmark },
+      { id: 'home', label: 'AI工作台', icon: Landmark },
       { id: 'tutorial', label: '使用教程', icon: HelpCircle },
       { id: 'advisor', label: '我的策略', icon: Brain },
       { id: 'action', label: '行动指南', icon: CalendarCheck },
@@ -168,6 +171,8 @@ function App() {
   const [records, setRecords] = useState<InvestmentRecord[]>([]);
   const [provider, setProvider] = useState<ProviderConfigOut | null>(null);
   const [historyStatus, setHistoryStatus] = useState<HistoricalDataStatus | null>(null);
+  const [agentWorkbench, setAgentWorkbench] = useState<AgentWorkbench | null>(null);
+  const [disciplineReview, setDisciplineReview] = useState<DisciplineReview | null>(null);
   const [notice, setNotice] = useState('');
   const [marketRefreshing, setMarketRefreshing] = useState(false);
   const [historyRefreshing, setHistoryRefreshing] = useState(false);
@@ -233,6 +238,10 @@ function App() {
       }
       const planData = await api.getMonthlyPlan(profileData.selected_strategy_id);
       setPlan(planData);
+      setLoading(false);
+      refreshAgentWorkbench(false).catch((err) => {
+        setError(err instanceof Error ? err.message : 'AI 工作台刷新失败');
+      });
       const ai = await api.explain(planData);
       setExplanation(ai.explanation);
       setAiStatus((current) => ({
@@ -251,6 +260,31 @@ function App() {
   useEffect(() => {
     refreshAll();
   }, []);
+
+  async function refreshAgentWorkbench(withAi = false) {
+    const [workbenchData, reviewData] = await Promise.all([
+      api.getAgentWorkbench(withAi),
+      api.getDisciplineReview(withAi),
+    ]);
+    setAgentWorkbench(workbenchData);
+    setDisciplineReview(reviewData);
+    return workbenchData;
+  }
+
+  async function runAgentSynthesis() {
+    setError('');
+    setNotice(provider?.api_key_set ? 'AI 正在综合当前策略、市场、计划和记录。' : '未配置 API Key，将使用本地 Agent 工作台。');
+    try {
+      const workbench = await refreshAgentWorkbench(Boolean(provider?.api_key_set));
+      setAiStatus((current) => ({
+        ...current,
+        lastAction: workbench.fallback ? '本地 Agent 已完成工作台综合' : `${workbench.provider_used} 已完成工作台综合`,
+      }));
+      setNotice(workbench.fallback ? '本地 Agent 工作台已刷新。' : 'AI 已综合当前上下文，工作台已刷新。');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'AI 工作台刷新失败');
+    }
+  }
 
   async function selectStrategy(strategyId: string) {
     const updated = { ...profile, selected_strategy_id: strategyId };
@@ -272,6 +306,7 @@ function App() {
         explanationFallback: ai.fallback,
         lastAction: ai.fallback ? '本地规则已解释切换后的计划' : 'DeepSeek 已解释切换后的计划',
       }));
+      await refreshAgentWorkbench(false);
       setNotice('策略已切换，本月计划已重新计算。');
     } catch (err) {
       setError(err instanceof Error ? err.message : '保存策略失败');
@@ -297,6 +332,7 @@ function App() {
         explanationFallback: ai.fallback,
         lastAction: ai.fallback ? '本地规则已解释保存后的计划' : 'DeepSeek 已解释保存后的计划',
       }));
+      await refreshAgentWorkbench(false);
       setNotice('配置已保存，计划已刷新。');
     } catch (err) {
       setError(err instanceof Error ? err.message : '保存失败');
@@ -319,6 +355,7 @@ function App() {
         explanationFallback: ai.fallback,
         lastAction: ai.fallback ? '市场已刷新，本地规则已解释' : '市场已刷新，DeepSeek 已解释',
       }));
+      await refreshAgentWorkbench(false);
       setNotice(`每日指数评估已刷新：${qualityLabel(marketData.data_quality)}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : '刷新市场数据失败');
@@ -336,6 +373,7 @@ function App() {
       setHistoryStatus(status);
       const comparison = await api.getBacktests();
       setBacktests(comparison);
+      await refreshAgentWorkbench(false);
       const ready = status.sources.filter((source) => source.data_quality === 'HISTORY_CACHE_READY').length;
       setNotice(`历史行情工具已刷新：${ready}/${status.sources.length} 类资产可用于历史回测。`);
     } catch (err) {
@@ -378,6 +416,7 @@ function App() {
         ? '本地个人策略已保存，纪律计划已生成'
         : 'DeepSeek 个人策略已保存，纪律计划已生成',
     }));
+    await refreshAgentWorkbench(false);
     setNotice(
       response.fallback
         ? `已保存到「我的策略」，并已生成个人回测：${response.backtest ? qualityLabel(response.backtest.data_quality) : '等待回测'}。`
@@ -404,6 +443,7 @@ function App() {
       });
       const recordData = await api.getRecords();
       setRecords(recordData);
+      await refreshAgentWorkbench(false);
       setNotice(created.duplicate ? '这条建议之前已经保存过，已为你打开投资记录。' : '本次建议已保存到投资记录。');
       setActivePage('records');
     } catch (err) {
@@ -419,6 +459,7 @@ function App() {
       await api.updateRecord(record.id, executed, record.execution_note || '');
       const recordData = await api.getRecords();
       setRecords(recordData);
+      await refreshAgentWorkbench(false);
       setNotice(executed ? '已标记为已执行。' : '已标记为待执行。');
     } catch (err) {
       setRecords(await api.getRecords());
@@ -439,6 +480,7 @@ function App() {
           market={market}
           provider={provider}
           aiStatus={aiStatus}
+          agentWorkbench={agentWorkbench}
           plan={plan}
           explanation={explanation}
           currentPlanSaved={currentPlanSaved}
@@ -449,6 +491,7 @@ function App() {
           onGoMarket={() => setActivePage('market')}
           onGoAction={() => setActivePage('action')}
           onRefreshMarket={() => refreshMarket(true)}
+          onRunAgent={runAgentSynthesis}
           marketRefreshing={marketRefreshing}
         />
       );
@@ -514,7 +557,7 @@ function App() {
       return <EducationPage />;
     }
     if (activePage === 'records') {
-      return <RecordsPage records={records} onMark={markRecord} />;
+      return <RecordsPage records={records} review={disciplineReview} onMark={markRecord} onRefreshReview={runAgentSynthesis} />;
     }
     return <SettingsPage provider={provider} onSaved={async () => setProvider(await api.getProviderConfig())} />;
   })();
@@ -560,7 +603,14 @@ function App() {
         {notice && <div className="banner success">{notice}</div>}
         {loading ? <LoadingState /> : page}
       </main>
-      <ProductAskBubble />
+      <ProductAskBubble
+        profile={profile}
+        strategy={selectedStrategy}
+        market={market}
+        plan={plan}
+        records={records}
+        suggestedQuestions={agentWorkbench?.suggested_questions || []}
+      />
     </div>
   );
 }
@@ -593,22 +643,56 @@ function answerProductQuestion(question: string) {
   return '你可以问我：个人策略保存在哪、回测数据是否真实、现金池怎么放、DeepSeek 起什么作用、投资记录怎么用。这个问一问目前是产品规则助手，后续可以接入 DeepSeek 做更自由的对话。';
 }
 
-function ProductAskBubble() {
+function ProductAskBubble({
+  profile,
+  strategy,
+  market,
+  plan,
+  records,
+  suggestedQuestions,
+}: {
+  profile: Profile;
+  strategy?: StrategyTemplate;
+  market: MarketSnapshot | null;
+  plan: MonthlyPlan | null;
+  records: InvestmentRecord[];
+  suggestedQuestions: string[];
+}) {
   const [open, setOpen] = useState(false);
   const [input, setInput] = useState('');
+  const [asking, setAsking] = useState(false);
   const [messages, setMessages] = useState<AskMessage[]>([
-    { role: 'assistant', text: '你好，我可以解释这个产品里的策略、回测、现金池、AI角色和投资记录。' },
+    { role: 'assistant', text: '你好，我会读取你的策略、市场温度、行动计划和投资记录来回答。金额仍以规则引擎为准。' },
   ]);
 
-  function submitQuestion() {
-    const question = input.trim();
+  async function submitQuestion(questionOverride?: string) {
+    const question = (questionOverride || input).trim();
     if (!question) return;
-    setMessages((current) => [
-      ...current,
-      { role: 'user', text: question },
-      { role: 'assistant', text: answerProductQuestion(question) },
-    ]);
+    setMessages((current) => [...current, { role: 'user', text: question }]);
     setInput('');
+    setAsking(true);
+    try {
+      const response: AgentChatResponse = await api.askAgent({
+        question,
+        profile,
+        strategy,
+        market,
+        plan,
+        records,
+      });
+      const trace = response.tools?.[0]?.summary ? `\n\n已调用：${response.tools.map((tool) => tool.name).join('、')}` : '';
+      setMessages((current) => [
+        ...current,
+        { role: 'assistant', text: `${response.answer}${trace}` },
+      ]);
+    } catch (err) {
+      setMessages((current) => [
+        ...current,
+        { role: 'assistant', text: answerProductQuestion(question) },
+      ]);
+    } finally {
+      setAsking(false);
+    }
   }
 
   return (
@@ -618,7 +702,7 @@ function ProductAskBubble() {
           <div className="ask-head">
             <div>
               <strong>问一问</strong>
-              <span>产品规则助手</span>
+              <span>上下文 Agent</span>
             </div>
             <button type="button" onClick={() => setOpen(false)} title="关闭问一问">
               <X size={18} />
@@ -630,7 +714,17 @@ function ProductAskBubble() {
                 {message.text}
               </div>
             ))}
+            {asking && <div className="ask-message">正在读取当前上下文...</div>}
           </div>
+          {suggestedQuestions.length > 0 && (
+            <div className="ask-suggestions">
+              {suggestedQuestions.slice(0, 3).map((question) => (
+                <button type="button" key={question} onClick={() => submitQuestion(question)}>
+                  {question}
+                </button>
+              ))}
+            </div>
+          )}
           <div className="ask-input">
             <input
               value={input}
@@ -638,9 +732,9 @@ function ProductAskBubble() {
               onKeyDown={(event) => {
                 if (event.key === 'Enter') submitQuestion();
               }}
-              placeholder="问策略、回测、现金池..."
+              placeholder="问你的策略、行动、市场..."
             />
-            <button type="button" onClick={submitQuestion} title="发送问题">
+            <button type="button" onClick={() => submitQuestion()} disabled={asking} title="发送问题">
               <Send size={17} />
             </button>
           </div>
@@ -777,6 +871,7 @@ function HomePage({
   market,
   provider,
   aiStatus,
+  agentWorkbench,
   plan,
   explanation,
   currentPlanSaved,
@@ -787,6 +882,7 @@ function HomePage({
   onGoMarket,
   onGoAction,
   onRefreshMarket,
+  onRunAgent,
   marketRefreshing,
 }: {
   strategies: StrategyTemplate[];
@@ -798,6 +894,7 @@ function HomePage({
   market: MarketSnapshot | null;
   provider: ProviderConfigOut | null;
   aiStatus: AIStatus;
+  agentWorkbench: AgentWorkbench | null;
   plan: MonthlyPlan | null;
   explanation: string;
   currentPlanSaved: boolean;
@@ -808,6 +905,7 @@ function HomePage({
   onGoMarket: () => void;
   onGoAction: () => void;
   onRefreshMarket: () => void;
+  onRunAgent: () => void;
   marketRefreshing: boolean;
 }) {
   const liveAssets = market?.assets.filter((asset) => asset.is_live).length || 0;
@@ -816,11 +914,11 @@ function HomePage({
     <div className="page-stack">
       <section className="intro-band">
         <div className="intro-copy">
-          <span className="eyebrow">策略、市场、纪律分开看</span>
-          <h1>先研究模板，再生成个人策略，最后按每日指数评估执行定投纪律。</h1>
+          <span className="eyebrow">AI 先理解你，再调用工具</span>
+          <h1>让 Agent 生成个人纪律书，再按每日指数评估执行定投计划。</h1>
           <p>
-            模板用于理解长期配置的收益和回撤，AI 顾问用于生成个人策略草案，市场温度每天更新并影响本月买入倍率。
-            规则引擎负责金额，DeepSeek 负责解释和策略草案，不直接下单。
+            AI 不负责拍脑袋买卖，而是读取你的资金、风险偏好、现金池、市场温度、回测和投资记录，
+            再调用规则引擎给出可执行纪律。金额由规则生成，AI 负责追问、解释、复盘和发现偏离。
           </p>
           <div className="action-row">
             <button className="secondary-action" onClick={onGoTutorial} title="先了解这个 Agent 解决什么问题和怎么使用">
@@ -844,6 +942,14 @@ function HomePage({
           <Metric label="今日市场数据" value={liveAssets ? `${liveAssets}/5 真实K线` : '代理数据'} sub={marketAsOf} />
         </div>
       </section>
+
+      <AgentWorkbenchPanel
+        workbench={agentWorkbench}
+        provider={provider}
+        onRunAgent={onRunAgent}
+        onGoAdvisor={onGoAdvisor}
+        onGoAction={onGoAction}
+      />
 
       <section className="workflow-grid">
         <div className="panel workflow-card">
@@ -959,6 +1065,93 @@ function HomePage({
         </div>
       </section>
     </div>
+  );
+}
+
+function AgentWorkbenchPanel({
+  workbench,
+  provider,
+  onRunAgent,
+  onGoAdvisor,
+  onGoAction,
+}: {
+  workbench: AgentWorkbench | null;
+  provider: ProviderConfigOut | null;
+  onRunAgent: () => void;
+  onGoAdvisor: () => void;
+  onGoAction: () => void;
+}) {
+  const tools = workbench?.tools || [];
+  return (
+    <section className="panel agent-workbench">
+      <div className="agent-hero-row">
+        <div>
+          <span className="eyebrow">AI Agent 工作台</span>
+          <h2>{workbench?.headline || '等待 Agent 读取当前上下文'}</h2>
+          <p>
+            {workbench?.brief ||
+              '工作台会读取用户画像、当前策略、每日市场、月度计划、历史数据和投资记录，再给出下一步。'}
+          </p>
+        </div>
+        <div className="agent-controls">
+          <span className="pill">{workbench?.fallback ? '本地 Agent' : workbench?.provider_used || '待运行'}</span>
+          <button className="primary-action" onClick={onRunAgent} title="让 Agent 重新综合当前上下文">
+            <Brain size={18} />
+            <span>{provider?.api_key_set ? '让 AI 综合一次' : '刷新本地 Agent'}</span>
+          </button>
+        </div>
+      </div>
+      <div className="agent-tool-grid">
+        {tools.map((tool) => (
+          <div className={`agent-tool-card ${tool.status}`} key={tool.name}>
+            <div className="card-row">
+              <strong>{tool.name}</strong>
+              <span className="pill">{tool.status === 'done' ? '已完成' : tool.status === 'warning' ? '需注意' : '受阻'}</span>
+            </div>
+            <p>{tool.summary}</p>
+            {tool.evidence.length > 0 && (
+              <ul>
+                {tool.evidence.slice(0, 2).map((item) => <li key={item}>{item}</li>)}
+              </ul>
+            )}
+          </div>
+        ))}
+        {!tools.length && (
+          <div className="agent-tool-card warning">
+            <strong>等待运行</strong>
+            <p>刷新后会展示 Agent 实际读取和调用的工具。</p>
+          </div>
+        )}
+      </div>
+      <div className="agent-bottom-grid">
+        <div>
+          <h3>下一步</h3>
+          <ul className="note-list">
+            {(workbench?.next_actions || ['生成个人策略', '查看行动指南', '执行后保存记录']).map((item) => (
+              <li key={item}>{item}</li>
+            ))}
+          </ul>
+        </div>
+        <div>
+          <h3>数据缺口</h3>
+          <ul className="note-list">
+            {(workbench?.missing_data?.length ? workbench.missing_data : ['暂无关键阻塞；仍需记住历史数据不代表未来收益。']).map((item) => (
+              <li key={item}>{item}</li>
+            ))}
+          </ul>
+        </div>
+        <div className="agent-shortcuts">
+          <button className="secondary-action" onClick={onGoAdvisor} title="生成或查看个人策略">
+            <Brain size={18} />
+            <span>个人策略</span>
+          </button>
+          <button className="secondary-action" onClick={onGoAction} title="查看近期行动指南">
+            <CalendarCheck size={18} />
+            <span>行动指南</span>
+          </button>
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -1083,6 +1276,22 @@ function AdvisorPage({
         description="生成后会保存为「当前个人策略」，并自动成为首页、行动指南和策略回测使用的默认策略。"
       />
       {localError && <div className="banner danger">{localError}</div>}
+      <section className="panel ai-pipeline-panel">
+        <div className="card-row">
+          <div>
+            <span className="eyebrow">AI Native 生成链路</span>
+            <h2>访谈不是表单，生成不是文案。</h2>
+            <p>Agent 会先理解你的资金和风险边界，再生成长期权重，随后调用回测工具验证历史体验，最后把结果保存为可执行纪律。</p>
+          </div>
+          <span className="pill">{provider?.api_key_set ? `${provider.provider} 已配置` : '本地顾问兜底'}</span>
+        </div>
+        <div className="pipeline-steps">
+          <div><strong>1 画像访谈</strong><span>资金、周期、回撤承受、偏好限制</span></div>
+          <div><strong>2 生成权重</strong><span>只在五类指数资产中分配，不碰个股</span></div>
+          <div><strong>3 工具回测</strong><span>调用后端回测引擎，不伪造缺失数据</span></div>
+          <div><strong>4 保存纪律</strong><span>进入首页、行动指南和问一问上下文</span></div>
+        </div>
+      </section>
       <section className="panel saved-strategy-panel">
         <div className="card-row">
           <div>
@@ -1901,7 +2110,17 @@ function EducationPage() {
   );
 }
 
-function RecordsPage({ records, onMark }: { records: InvestmentRecord[]; onMark: (record: InvestmentRecord, executed: boolean) => void }) {
+function RecordsPage({
+  records,
+  review,
+  onMark,
+  onRefreshReview,
+}: {
+  records: InvestmentRecord[];
+  review: DisciplineReview | null;
+  onMark: (record: InvestmentRecord, executed: boolean) => void;
+  onRefreshReview: () => void;
+}) {
   return (
     <div className="page-stack">
       <PageHeader
@@ -1909,6 +2128,33 @@ function RecordsPage({ records, onMark }: { records: InvestmentRecord[]; onMark:
         title="记录不是为了后悔，是为了抵抗情绪。"
         description="每次建议都保存输入、规则结果和解释，后续可以复盘纪律是否被执行。"
       />
+      <section className="panel discipline-panel">
+        <div className="card-row">
+          <div>
+            <span className="eyebrow">AI 纪律复盘</span>
+            <h2>{review ? `执行纪律分 ${review.score}` : '等待复盘记录'}</h2>
+            <p>{review?.summary || '保存并标记执行状态后，Agent 会复盘你是否偏离长期纪律。'}</p>
+          </div>
+          <button className="secondary-action" onClick={onRefreshReview} title="刷新纪律复盘">
+            <RefreshCw size={18} />
+            <span>刷新复盘</span>
+          </button>
+        </div>
+        <div className="discipline-grid">
+          <div>
+            <h3>观察</h3>
+            <ul className="note-list">
+              {(review?.observations || ['暂无足够记录。']).map((item) => <li key={item}>{item}</li>)}
+            </ul>
+          </div>
+          <div>
+            <h3>修正动作</h3>
+            <ul className="note-list">
+              {(review?.next_actions || ['先保存本月建议，再标记是否执行。']).map((item) => <li key={item}>{item}</li>)}
+            </ul>
+          </div>
+        </div>
+      </section>
       <div className="record-list">
         {records.length === 0 && <div className="panel empty">暂无记录。可以在首页保存本月建议。</div>}
         {records.map((record) => (
@@ -2201,7 +2447,12 @@ function LabeledInput({ label, value, onChange }: { label: string; value: number
   );
 }
 
-createRoot(document.getElementById('root')!).render(
+const rootElement = document.getElementById('root')!;
+const rootWindow = window as typeof window & { __passiveIncomeRoot?: ReturnType<typeof createRoot> };
+const root = rootWindow.__passiveIncomeRoot || createRoot(rootElement);
+rootWindow.__passiveIncomeRoot = root;
+
+root.render(
   <React.StrictMode>
     <App />
   </React.StrictMode>,
